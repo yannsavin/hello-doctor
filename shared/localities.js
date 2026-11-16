@@ -1,0 +1,30 @@
+// Localities in Malta and Gozo with approximate coordinates (shared by server and client).
+export const LOCALITIES = [
+  { name: 'Valletta', lat: 35.8989, lng: 14.5146 },
+  { name: 'Sliema', lat: 35.9122, lng: 14.5042 },
+  { name: "St Julian's", lat: 35.9187, lng: 14.489 },
+  { name: 'Gżira', lat: 35.9058, lng: 14.4881 },
+  { name: 'Swieqi', lat: 35.9225, lng: 14.48 },
+  { name: 'Birkirkara', lat: 35.8972, lng: 14.4611 },
+  { name: 'Naxxar', lat: 35.9136, lng: 14.4436 },
+  { name: 'Mosta', lat: 35.9097, lng: 14.4256 },
+  { name: 'Rabat', lat: 35.8817, lng: 14.3989 },
+  { name: 'Mdina', lat: 35.8858, lng: 14.4031 },
+  { name: 'Żebbuġ', lat: 35.8719, lng: 14.4411 },
+  { name: 'Siġġiewi', lat: 35.8547, lng: 14.4383 },
+  { name: 'Żurrieq', lat: 35.8306, lng: 14.4744 },
+  { name: 'Paola', lat: 35.8728, lng: 14.5075 },
+  { name: 'Żabbar', lat: 35.8761, lng: 14.5381 },
+  { name: 'Żejtun', lat: 35.8558, lng: 14.5331 },
+  { name: 'Marsaskala', lat: 35.8625, lng: 14.5675 },
+  { name: 'Marsaxlokk', lat: 35.8419, lng: 14.5431 },
+  { name: "St Paul's Bay", lat: 35.9483, lng: 14.4011 },
+  { name: 'Qawra', lat: 35.952, lng: 14.4231 },
+  { name: 'Mellieħa', lat: 35.9564, lng: 14.3622 },
+  { name: 'Victoria (Gozo)', lat: 36.0444, lng: 14.2397 },
+  { name: 'Xagħra (Gozo)', lat: 36.0503, lng: 14.2644 },
+  { name: 'Marsalforn (Gozo)', lat: 36.0722, lng: 14.2581 },
+  { name: 'Għajnsielem (Gozo)', lat: 36.027, lng: 14.29 },
+];
+
+export const findLocality = (name) => LOCALITIES.find((l) => l.name === name) || null;

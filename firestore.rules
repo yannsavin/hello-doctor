@@ -1,0 +1,165 @@
+rules_version = '2';
+
+// Hello Doctor security rules.
+// The website talks to Firestore directly (no server), so these rules are what keeps the data safe:
+// who can read what, which status changes are allowed, and that prices match the doctor's fees.
+// Publish with:  npm run deploy-rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function userData(id) { return get(/databases/$(database)/documents/users/$(id)).data; }
+    function me() { return userData(uid()); }
+    function isAdmin() { return signedIn() && me().role == 'admin'; }
+    function active() { return signedIn() && me().blocked == false; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function near(a, b) { return math.abs(a - b) < 0.01; }
+
+    // ---------- Users ----------
+    match /users/{id} {
+      // Doctor profiles are public (doctor list, map on the home page). Patients only see themselves.
+      allow read: if resource.data.role == 'doctor' || (signedIn() && (uid() == id || isAdmin()));
+
+      // Sign-up: you can only create your own profile, never as admin, never pre-approved
+      // (except a patient with a Maltese ID card, whose format is checked instantly).
+      allow create: if signedIn() && uid() == id
+        && request.resource.data.role in ['patient', 'doctor']
+        && request.resource.data.blocked == false
+        && (request.resource.data.idStatus == 'pending'
+            || (request.resource.data.role == 'patient'
+                && request.resource.data.idType == 'maltese_id'
+                && request.resource.data.idStatus == 'verified'))
+        && (request.resource.data.role == 'patient'
+            || (request.resource.data.doctor.online == false
+                && request.resource.data.doctor.ratingSum == 0
+                && request.resource.data.doctor.ratingCount == 0
+                && request.resource.data.doctor.completedCount == 0
+                && request.resource.data.doctor.pastConsultations == 0));
+
+      // Editing your own profile (not your role, ID status, block status or ratings).
+      allow update: if active() && uid() == id
+        && changed().hasOnly(['name', 'phone', 'age', 'reducedMobility', 'isTourist', 'locality', 'address', 'lat', 'lng', 'doctor'])
+        && (!('doctor' in changed()) || doctorSelfEdit());
+
+      // A patient rating a doctor: +1 review, +1 to 5 stars.
+      allow update: if active() && resource.data.role == 'doctor'
+        && changed().hasOnly(['doctor'])
+        && request.resource.data.doctor.diff(resource.data.doctor).affectedKeys().hasOnly(['ratingSum', 'ratingCount'])
+        && request.resource.data.doctor.ratingCount == resource.data.doctor.ratingCount + 1
+        && request.resource.data.doctor.ratingSum - resource.data.doctor.ratingSum >= 1
+        && request.resource.data.doctor.ratingSum - resource.data.doctor.ratingSum <= 5;
+
+      // Administrators: approve IDs, block accounts.
+      allow update: if isAdmin()
+        && changed().hasOnly(['idStatus', 'blocked', 'doctor'])
+        && (!('doctor' in changed()) || request.resource.data.doctor.diff(resource.data.doctor).affectedKeys().hasOnly(['online']));
+
+      function doctorSelfEdit() {
+        let d = request.resource.data.doctor.diff(resource.data.doctor).affectedKeys();
+        return d.hasOnly(['online', 'busy', 'bio', 'languages', 'homeFee', 'videoFee', 'offersHome', 'offersVideo', 'yearsExperience', 'completedCount'])
+          && (!('online' in d) || request.resource.data.doctor.online == false || resource.data.idStatus == 'verified')
+          && (!('completedCount' in d) || request.resource.data.doctor.completedCount == resource.data.doctor.completedCount + 1);
+      }
+
+      // ID document numbers: only the owner and administrators.
+      match /private/{docId} {
+        allow read: if signedIn() && (uid() == id || isAdmin());
+        allow create: if signedIn() && uid() == id;
+      }
+    }
+
+    // ---------- Appointments ----------
+    match /appointments/{id} {
+      allow read: if signedIn() && (resource.data.patientId == uid() || resource.data.doctorId == uid() || isAdmin());
+
+      // Booking: only as yourself, starts "pending", price must match the doctor's fee
+      // (+10% booking fee, or no fee and at most 15% plan discount).
+      allow create: if active() && me().role == 'patient'
+        && request.resource.data.patientId == uid()
+        && request.resource.data.status == 'pending'
+        && request.resource.data.report == null
+        && request.resource.data.review == null
+        && validPrice(request.resource.data, userData(request.resource.data.doctorId));
+
+      allow update: if active() && resource.data.doctorId == uid() && doctorMove();
+      allow update: if active() && resource.data.patientId == uid() && patientMove();
+
+      function validPrice(a, d) {
+        let base = a.visitType == 'home' ? d.doctor.homeFee : d.doctor.videoFee;
+        return d.role == 'doctor' && d.idStatus == 'verified' && d.blocked == false
+          && near(a.price.base, base)
+          && near(a.price.total, a.price.base + a.price.serviceFee - a.price.discount)
+          && ((near(a.price.serviceFee, base * 0.1) && a.price.discount == 0)
+              || (a.price.serviceFee == 0 && a.price.discount <= base * 0.15 + 0.01));
+      }
+
+      function doctorMove() {
+        let from = resource.data.status;
+        let to = request.resource.data.status;
+        return changed().hasOnly(['status', 'updatedAt', 'enRouteAt', 'etaMinutes', 'doctor', 'report', 'completedAt'])
+          && ((from == 'pending' && to in ['accepted', 'declined'])
+            || (from == 'accepted' && to in ['en_route', 'in_progress', 'cancelled'])
+            || (from == 'en_route' && to == 'in_progress')
+            || (from == 'in_progress' && to == 'completed' && request.resource.data.report != null));
+      }
+
+      function patientMove() {
+        return (changed().hasOnly(['status', 'updatedAt'])
+                && resource.data.status in ['pending', 'accepted']
+                && request.resource.data.status == 'cancelled')
+          || (changed().hasOnly(['review'])
+                && resource.data.status == 'completed'
+                && resource.data.review == null);
+      }
+    }
+
+    // ---------- Reviews (public, one per completed visit) ----------
+    match /reviews/{appointmentId} {
+      allow read: if true;
+      allow create: if active()
+        && request.resource.data.patientId == uid()
+        && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.patientId == uid()
+        && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.status == 'completed'
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1 && request.resource.data.rating <= 5;
+    }
+
+    // ---------- Time slots ----------
+    match /slots/{id} {
+      allow read: if signedIn();
+      allow create: if active() && me().role == 'doctor'
+        && request.resource.data.doctorId == uid() && request.resource.data.booked == false;
+      allow delete: if active() && resource.data.doctorId == uid() && resource.data.booked == false;
+      allow update: if active() && changed().hasOnly(['booked']);
+    }
+
+    // ---------- Payments (only card brand + last 4 digits) ----------
+    match /payments/{id} {
+      allow read: if signedIn() && (resource.data.userId == uid() || isAdmin());
+      allow create: if active() && request.resource.data.userId == uid()
+        && request.resource.data.status == 'paid'
+        && request.resource.data.cardLast4.size() == 4;
+      // Refund when a visit is declined or cancelled.
+      allow update: if active() && changed().hasOnly(['status']) && request.resource.data.status == 'refunded';
+    }
+
+    // ---------- Subscriptions ----------
+    match /subscriptions/{id} {
+      allow read: if signedIn() && (resource.data.userId == uid() || isAdmin());
+      allow create: if active() && request.resource.data.userId == uid()
+        && request.resource.data.status == 'active'
+        && ((request.resource.data.plan == 'monthly' && request.resource.data.price == 9.99)
+            || (request.resource.data.plan == 'annual' && request.resource.data.price == 99));
+      allow update: if active() && resource.data.userId == uid()
+        && changed().hasOnly(['status', 'endsAt']) && request.resource.data.status == 'cancelled';
+    }
+
+    // ---------- Reports to administrators ----------
+    match /flags/{id} {
+      allow read: if signedIn() && (resource.data.reporterId == uid() || isAdmin());
+      allow create: if active() && request.resource.data.reporterId == uid() && request.resource.data.status == 'open';
+      allow update: if isAdmin() && changed().hasOnly(['status', 'resolution']);
+    }
+  }
+}
